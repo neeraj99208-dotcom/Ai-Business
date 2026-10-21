@@ -46,7 +46,7 @@ const navbar = () => {
           <Link to="/dash" onClick={() => setMenuOpen(false)}>
             Dash
           </Link>
-          <Link to='/know' onClick={()=>setMenuOpen(false)}>
+          <Link to='/knowledge' onClick={()=>setMenuOpen(false)}>
           knowledge
           </Link> 
           <Link to="/Plan" onClick={() => setMenuOpen(false)}>
