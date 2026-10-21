@@ -436,10 +436,14 @@ Instructions:
 
 // Start Server
 
-const PORT = process.env.PORT || 5000;
+// Export Express app for Vercel
+module.exports = app;
 
-app.listen(PORT, () => {
+// Start server only when running locally
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
 
-  console.log(`Server running on port ${PORT}`);
-
-});
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
