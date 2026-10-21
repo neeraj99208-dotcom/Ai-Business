@@ -8,6 +8,7 @@ const cors = require('cors');//
 require('dotenv').config();
 
 
+
 dns.setServers([
 
     "1.1.1.1",
@@ -17,7 +18,9 @@ dns.setServers([
 ]);
 
 
+
 const app = express();
+
 
 
 // Middleware
@@ -25,6 +28,9 @@ const app = express();
 app.use(express.json());
 
 app.use(cors());
+app.get('/', (req, res) => {
+  res.send('AI Business Validator Backend is running!');
+});
 
 
 // Connect to MongoDB
@@ -34,6 +40,7 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("Connected to MongoDB"))
 
   .catch((err) => console.error("MongoDB connection error:", err));
+
 
 
 // Define User Schema & Model
@@ -47,7 +54,9 @@ const userSchema = new mongoose.Schema({
 });
 
 
+
 const User = mongoose.model('User', userSchema);
+
 
 
 // Signup Route
@@ -67,9 +76,11 @@ app.post('/api/signup', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
 
+
     const newUser = new User({ username, password: hashedPassword });
 
     await newUser.save();
+
 
 
     res.status(201).json({ message: "User created successfully!" });
@@ -85,6 +96,7 @@ app.post('/api/signup', async (req, res) => {
 });
 
 
+
 // Login Route
 
 app.post('/api/login', async (req, res) => {
@@ -92,6 +104,7 @@ app.post('/api/login', async (req, res) => {
   try {
 
     const { username, password } = req.body;
+
 
 
     const user = await User.findOne({ username });
@@ -103,6 +116,7 @@ app.post('/api/login', async (req, res) => {
     }
 
 
+
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
@@ -110,6 +124,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ message: "Invalid username or password" });
 
     }
+
 
 
     res.status(200).json({ message: "Login successful!" });
@@ -125,9 +140,11 @@ app.post('/api/login', async (req, res) => {
 });
 
 
+
 // AI Business Analysis Route (Ye wahi route hai jo 404 error de raha tha agar server restart na ho)
 
 // Real Gemini AI Business Analysis Route
+
 
 
 
@@ -414,17 +431,21 @@ Instructions:
     return res.status(500).json({
       success: false,
       message:
-        'Gemini analysis failed. Check the backend terminal.'
+        err.message || 'Gemini analysis failed. Check the backend terminal.'
     });
   }
 });
 
 // Start Server
 
-const PORT = process.env.PORT || 5000;
+// Export Express app for Vercel
+module.exports = app;
 
-app.listen(PORT, () => {
+// Start server only when running locally
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
 
-  console.log(`Server running on port ${PORT}`);
-
-});
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
