@@ -29,7 +29,7 @@ const Dash = () => {
 
     try {
       const response = await fetch(
-        'http://localhost:5000/api/analyze',
+        'https://ai-business-validation-api.vercel.app/api/analyze',
         {
           method: 'POST',
           headers: {
