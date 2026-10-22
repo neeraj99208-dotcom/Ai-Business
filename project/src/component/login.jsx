@@ -19,7 +19,7 @@ const Signup = () => {
     }
 
     try {
-      const response = await fetch('https://ai-business-6nf4.vercel.app/api/signup', {
+      const response = await fetch('https://ai-business-ip24.vercel.app/api/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
