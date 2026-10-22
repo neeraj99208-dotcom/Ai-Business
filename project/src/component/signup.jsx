@@ -15,7 +15,7 @@ function App() {
     setErrorMessage('');
 
     try {
-      const response = await fetch('https://ai-business-1otu.vercel.app/api/login', {
+      const response = await fetch('https://ai-business-nxy6.vercel.app/api/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
