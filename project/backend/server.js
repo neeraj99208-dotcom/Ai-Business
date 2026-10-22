@@ -1,165 +1,154 @@
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenAI, Type } = require("@google/genai");
 const dns = require("node:dns");
-const express = require('express');
-const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
-const cors = require('cors');//
+const express = require("express");
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+const cors = require("cors");
 
-require('dotenv').config();
+require("dotenv").config();
 
-
-
-dns.setServers([
-
-    "1.1.1.1",
-
-    "8.8.8.8"
-
-]);
-
-
+// DNS configuration retained from your existing project
+dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const app = express();
 
-
-
-// Middleware
-
 app.use(express.json());
-
 app.use(cors());
-app.get('/', (req, res) => {
-  res.send('AI Business Validator Backend is running!');
-});
 
-
-// Connect to MongoDB
-
-mongoose.connect(process.env.MONGO_URI)
-
+// MongoDB connection
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("Connected to MongoDB"))
+  .catch((err) =>
+    console.error("MongoDB connection error:", err.message)
+  );
 
-  .catch((err) => console.error("MongoDB connection error:", err));
-
-
-
-// Define User Schema & Model
-
+// User schema
 const userSchema = new mongoose.Schema({
-
-  username: { type: String, required: true, unique: true },
-
-  password: { type: String, required: true }
-
+  username: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  password: {
+    type: String,
+    required: true,
+  },
 });
 
+const User = mongoose.model("User", userSchema);
 
-
-const User = mongoose.model('User', userSchema);
-
-
-
-// Signup Route
-
-app.post('/api/signup', async (req, res) => {
-
+// POST /api/signup
+app.post("/api/signup", async (req, res) => {
   try {
+    const { username, password } = req.body || {};
 
-    const { username, password } = req.body;
-    const existingUser = await User.findOne({ username });
-    if (existingUser) {
-      return res.status(400).json({ message: "Username already taken" });
+    if (
+      typeof username !== "string" ||
+      typeof password !== "string" ||
+      !username.trim() ||
+      !password
+    ) {
+      return res.status(400).json({
+        message: "Username and password are required.",
+      });
     }
 
-    const salt = await bcrypt.genSalt(10);
+    const existingUser = await User.findOne({
+      username: username.trim(),
+    });
 
-    const hashedPassword = await bcrypt.hash(password, salt);
+    if (existingUser) {
+      return res.status(400).json({
+        message: "Username already taken",
+      });
+    }
 
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-
-    const newUser = new User({ username, password: hashedPassword });
+    const newUser = new User({
+      username: username.trim(),
+      password: hashedPassword,
+    });
 
     await newUser.save();
 
-
-
-    res.status(201).json({ message: "User created successfully!" });
-
+    return res.status(201).json({
+      message: "User created successfully!",
+    });
   } catch (err) {
+    console.error("Signup error:", err.message);
 
-    console.error(err);
-
-    res.status(500).json({ message: "Server error" });
-
-  }
-
-});
-
-
-
-// Login Route
-
-app.post('/api/login', async (req, res) => {
-
-  try {
-
-    const { username, password } = req.body;
-
-
-
-    const user = await User.findOne({ username });
-
-    if (!user) {
-
-      return res.status(400).json({ message: "Invalid username or password" });
-
+    if (err.code === 11000) {
+      return res.status(400).json({
+        message: "Username already taken",
+      });
     }
 
-
-
-    const isMatch = await bcrypt.compare(password, user.password);
-
-    if (!isMatch) {
-
-      return res.status(400).json({ message: "Invalid username or password" });
-
-    }
-
-
-
-    res.status(200).json({ message: "Login successful!" });
-
-  } catch (err) {
-
-    console.error(err);
-
-    res.status(500).json({ message: "Server error" });
-
+    return res.status(500).json({
+      message: "Server error during signup.",
+    });
   }
-
 });
 
-
-
-// AI Business Analysis Route (Ye wahi route hai jo 404 error de raha tha agar server restart na ho)
-
-// Real Gemini AI Business Analysis Route
-
-
-
-
-
-app.post('/api/analyze', async (req, res) => {
+// POST /api/login
+app.post("/api/login", async (req, res) => {
   try {
-    const { topic } = req.body;
+    const { username, password } = req.body || {};
 
     if (
-      typeof topic !== 'string' ||
-      !topic.trim()
+      typeof username !== "string" ||
+      typeof password !== "string" ||
+      !username.trim() ||
+      !password
     ) {
       return res.status(400).json({
+        message: "Username and password are required.",
+      });
+    }
+
+    const user = await User.findOne({
+      username: username.trim(),
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "Invalid username or password",
+      });
+    }
+
+    const isMatch = await bcrypt.compare(
+      password,
+      user.password
+    );
+
+    if (!isMatch) {
+      return res.status(400).json({
+        message: "Invalid username or password",
+      });
+    }
+
+    return res.status(200).json({
+      message: "Login successful!",
+    });
+  } catch (err) {
+    console.error("Login error:", err.message);
+
+    return res.status(500).json({
+      message: "Server error during login.",
+    });
+  }
+});
+
+// POST /api/analyze
+app.post("/api/analyze", async (req, res) => {
+  try {
+    const { topic } = req.body || {};
+
+    if (typeof topic !== "string" || !topic.trim()) {
+      return res.status(400).json({
         success: false,
-        message: 'Please enter a business idea.'
+        message: "Please enter a business idea.",
       });
     }
 
@@ -167,281 +156,265 @@ app.post('/api/analyze', async (req, res) => {
     const model = process.env.GEMINI_MODEL;
 
     if (!apiKey || !model) {
+      console.error(
+        "GEMINI_API_KEY or GEMINI_MODEL is missing."
+      );
+
       return res.status(500).json({
         success: false,
-        message:
-          'Check GEMINI_API_KEY and GEMINI_MODEL in .env.'
+        message: "AI service configuration is missing.",
       });
     }
 
     const ai = new GoogleGenAI({
-      apiKey: apiKey
+      apiKey: apiKey,
     });
 
     const prompt = `
-You are an expert business validation consultant.
+You are a business validation consultant.
 
-Analyze this exact business idea:
+Analyze the following business idea:
 "${topic.trim()}"
 
-Return ONLY a valid JSON object with these fields:
+Use practical assumptions and Indian market context where relevant.
+Do not claim that estimates guarantee business success.
 
-{
-  "demand": "Market demand and target customers",
-  "scope": "Growth opportunities and business risks",
-  "budget": "Estimated startup costs and cost breakdown",
-  "competition": "Relevant competitors and differentiation strategy",
-  "metrics": {
-    "demandScore": 0,
-    "scopeScore": 0,
-    "competitionScore": 0,
-    "riskScore": 0,
-    "startupBudget": 0,
-    "monthlyExpenses": 0,
-    "expectedMonthlyRevenue": 0
-  }
-}
+Return ONLY valid JSON with these fields:
 
-Instructions:
-- Make each section specific to this business idea.
-- Do not return generic template answers.
-- State assumptions and label budget figures as estimates.
-- Do not invent verified market statistics.
-- Return demand, scope, budget, and competition as strings.
-- All scores must be integers from 0 to 100.
-- demandScore: estimated strength of market demand.
-- scopeScore: estimated business growth potential.
-- competitionScore: 100 means extremely intense competition.
-- riskScore: 100 means extremely high business risk.
-- Financial figures must be non-negative numbers in INR.
-- startupBudget: estimated initial investment required.
-- monthlyExpenses: estimated monthly operating expenses.
-- expectedMonthlyRevenue: estimated monthly revenue after launch.
-- Base estimates on reasonable assumptions for this business idea.
-- Do not present estimates as verified facts or guaranteed outcomes.
-- Return all required metrics.
+1. demand: A concise explanation of market demand.
+2. scope: A concise explanation of business potential and growth.
+3. budget: A concise estimated startup budget in INR.
+4. competition: A concise explanation of competitors and differentiation.
+5. metrics: Numeric scores for the dashboard.
+
+For metrics:
+- demandScore: number from 0 to 100
+- probabilityOfSuccess: number from 0 to 100
+- competitionScore: number from 0 to 100
+- estimatedBudgetINR: estimated budget as a number in INR
+
+Scores are estimates, not guarantees.
 `;
 
-    // Retry temporary Gemini API errors.
-    let response;
+    // Retry only temporary server errors.
+    // Do not repeatedly retry exhausted quota errors.
     const maxAttempts = 3;
+    let response;
 
-    for (
-      let attempt = 1;
-      attempt <= maxAttempts;
-      attempt++
-    ) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         response = await ai.models.generateContent({
           model: model,
           contents: prompt,
           config: {
-            temperature: 0.7,
-            responseMimeType: 'application/json',
+            responseMimeType: "application/json",
             responseSchema: {
-              type: 'OBJECT',
+              type: Type.OBJECT,
               properties: {
                 demand: {
-                  type: 'STRING'
+                  type: Type.STRING,
                 },
                 scope: {
-                  type: 'STRING'
+                  type: Type.STRING,
                 },
                 budget: {
-                  type: 'STRING'
+                  type: Type.STRING,
                 },
                 competition: {
-                  type: 'STRING'
+                  type: Type.STRING,
                 },
                 metrics: {
-                  type: 'OBJECT',
+                  type: Type.OBJECT,
                   properties: {
                     demandScore: {
-                      type: 'INTEGER'
+                      type: Type.NUMBER,
                     },
-                    scopeScore: {
-                      type: 'INTEGER'
+                    probabilityOfSuccess: {
+                      type: Type.NUMBER,
                     },
                     competitionScore: {
-                      type: 'INTEGER'
+                      type: Type.NUMBER,
                     },
-                    riskScore: {
-                      type: 'INTEGER'
+                    estimatedBudgetINR: {
+                      type: Type.NUMBER,
                     },
-                    startupBudget: {
-                      type: 'NUMBER'
-                    },
-                    monthlyExpenses: {
-                      type: 'NUMBER'
-                    },
-                    expectedMonthlyRevenue: {
-                      type: 'NUMBER'
-                    }
                   },
                   required: [
-                    'demandScore',
-                    'scopeScore',
-                    'competitionScore',
-                    'riskScore',
-                    'startupBudget',
-                    'monthlyExpenses',
-                    'expectedMonthlyRevenue'
-                  ]
-                }
+                    "demandScore",
+                    "probabilityOfSuccess",
+                    "competitionScore",
+                    "estimatedBudgetINR",
+                  ],
+                },
               },
               required: [
-                'demand',
-                'scope',
-                'budget',
-                'competition',
-                'metrics'
-              ]
-            }
-          }
+                "demand",
+                "scope",
+                "budget",
+                "competition",
+                "metrics",
+              ],
+            },
+          },
         });
 
-        // Successful request: exit the retry loop.
         break;
-
       } catch (err) {
-        const status = Number(err.status || err.code);
-        const message = String(err.message || err);
+        const errorText = String(err.message || "");
+        const status = Number(err.status || err.code || 0);
 
-        const retryable =
-          [429, 500, 502, 503, 504].includes(status) ||
-          /\b(429|500|502|503|504)\b/.test(message);
+        const quotaExceeded =
+          status === 429 ||
+          /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText);
 
-        if (!retryable || attempt === maxAttempts) {
+        if (quotaExceeded) {
+          console.error("Gemini quota exhausted.");
+
+          return res.status(429).json({
+            success: false,
+            message:
+              "Gemini API quota exhausted. Please try again after your quota resets.",
+          });
+        }
+
+        const temporaryError =
+          [500, 502, 503, 504].includes(status) ||
+          /UNAVAILABLE|INTERNAL|overloaded/i.test(errorText);
+
+        if (!temporaryError || attempt === maxAttempts) {
           throw err;
         }
 
-        // Wait 1 second, then 2 seconds.
         const delay = 1000 * Math.pow(2, attempt - 1);
 
-        console.warn(
-          `Gemini temporary error. Retrying in ${delay}ms ` +
-          `(attempt ${attempt + 1}/${maxAttempts}).`
+        console.log(
+          `Gemini temporary error. Retry ${attempt + 1}/${maxAttempts} in ${delay}ms.`
         );
 
-        await new Promise(resolve =>
+        await new Promise((resolve) =>
           setTimeout(resolve, delay)
         );
       }
     }
 
-    const aiOutput = response?.text;
-
-    if (!aiOutput) {
-      return res.status(502).json({
-        success: false,
-        message: 'Gemini returned an empty response.'
-      });
+    if (!response || !response.text) {
+      throw new Error("Gemini returned an empty response.");
     }
 
-    let result;
+    let data;
 
     try {
-      result = JSON.parse(aiOutput);
-    } catch (err) {
-      console.error(
-        'Gemini JSON parsing error:',
-        err.message
-      );
-
-      return res.status(502).json({
-        success: false,
-        message: 'Gemini returned an invalid response.'
-      });
+      data = JSON.parse(response.text);
+    } catch {
+      throw new Error("Gemini returned invalid JSON.");
     }
 
-    // Validate the original four text fields.
-    const fields = [
-      'demand',
-      'scope',
-      'budget',
-      'competition'
+    // Validate the required analysis fields
+    const requiredFields = [
+      "demand",
+      "scope",
+      "budget",
+      "competition",
     ];
 
-    const valid = fields.every(
-      field =>
-        typeof result[field] === 'string' &&
-        result[field].trim().length > 0
-    );
-
-    if (!valid) {
-      return res.status(502).json({
-        success: false,
-        message:
-          'Gemini response is missing required sections.'
-      });
+    for (const field of requiredFields) {
+      if (
+        typeof data[field] !== "string" ||
+        !data[field].trim()
+      ) {
+        throw new Error(
+          `Gemini returned incomplete analysis: ${field}`
+        );
+      }
     }
 
-    // Validate numerical metrics.
-    const m = result.metrics;
+    const metricFields = [
+      "demandScore",
+      "probabilityOfSuccess",
+      "competitionScore",
+      "estimatedBudgetINR",
+    ];
 
-    const validMetrics =
-      m &&
-      [
-        'demandScore',
-        'scopeScore',
-        'competitionScore',
-        'riskScore'
-      ].every(
-        key =>
-          Number.isInteger(m[key]) &&
-          m[key] >= 0 &&
-          m[key] <= 100
-      ) &&
-      [
-        'startupBudget',
-        'monthlyExpenses',
-        'expectedMonthlyRevenue'
-      ].every(
-        key =>
-          typeof m[key] === 'number' &&
-          Number.isFinite(m[key]) &&
-          m[key] >= 0
-      );
-
-    if (!validMetrics) {
-      return res.status(502).json({
-        success: false,
-        message:
-          'Gemini returned invalid business metrics.'
-      });
+    if (
+      !data.metrics ||
+      !metricFields.every(
+        (field) =>
+          typeof data.metrics[field] === "number" &&
+          Number.isFinite(data.metrics[field])
+      )
+    ) {
+      throw new Error("Gemini returned invalid analysis metrics.");
     }
 
-    // Return the original fields plus the metrics.
+    for (const field of [
+      "demandScore",
+      "probabilityOfSuccess",
+      "competitionScore",
+    ]) {
+      if (
+        data.metrics[field] < 0 ||
+        data.metrics[field] > 100
+      ) {
+        throw new Error(`Invalid metric: ${field}`);
+      }
+    }
+
+    if (data.metrics.estimatedBudgetINR < 0) {
+      throw new Error("Invalid estimated budget.");
+    }
+
     return res.status(200).json({
       success: true,
-      data: {
-        demand: result.demand,
-        scope: result.scope,
-        budget: result.budget,
-        competition: result.competition,
-        metrics: result.metrics
-      }
+      data: data,
     });
-
   } catch (err) {
-    console.error('Gemini API error:', err);
-    console.error('Error message:', err.message);
-    console.error('Error status:', err.status);
+    const errorText = String(err.message || "");
+    const status = Number(err.status || err.code || 0);
+
+    console.error("Gemini analysis failed:", errorText);
+
+    // Handle quota errors that reach the outer catch
+    if (
+      status === 429 ||
+      /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText)
+    ) {
+      return res.status(429).json({
+        success: false,
+        message:
+          "Gemini API quota exhausted. Please try again after your quota resets.",
+      });
+    }
+
+    if (
+      status === 503 ||
+      /UNAVAILABLE|overloaded/i.test(errorText)
+    ) {
+      return res.status(503).json({
+        success: false,
+        message:
+          "Gemini is temporarily unavailable. Please try again later.",
+      });
+    }
 
     return res.status(500).json({
       success: false,
       message:
-        err.message || 'Gemini analysis failed. Check the backend terminal.'
+        "Business analysis failed. Please try again later.",
     });
   }
 });
 
-// Start Server
+// Basic backend health check
+app.get("/", (req, res) => {
+  res.status(200).send(
+    "AI Business Validator Backend is running!"
+  );
+});
 
-// Export Express app for Vercel
+// Export the app for Vercel
 module.exports = app;
 
-// Start server only when running locally
+// Start the server locally only
 if (require.main === module) {
   const PORT = process.env.PORT || 5000;
 
