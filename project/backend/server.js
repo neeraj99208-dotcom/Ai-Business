@@ -1,3 +1,4 @@
+
 const { GoogleGenAI, Type } = require("@google/genai");
 const dns = require("node:dns");
 const express = require("express");
@@ -7,7 +8,7 @@ const cors = require("cors");
 
 require("dotenv").config();
 
-// DNS configuration retained from your existing project
+// Retain existing DNS configuration
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const app = express();
@@ -15,13 +16,38 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// MongoDB connection
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => console.log("Connected to MongoDB"))
-  .catch((err) =>
-    console.error("MongoDB connection error:", err.message)
-  );
+// Reuse the MongoDB connection across Vercel invocations
+const cached = global.mongooseCache ||
+  (global.mongooseCache = { conn: null, promise: null });
+
+async function connectDB() {
+  if (cached.conn && mongoose.connection.readyState === 1) {
+    return cached.conn;
+  }
+
+  if (!process.env.MONGO_URI) {
+    throw new Error("MONGO_URI environment variable is missing.");
+  }
+
+  if (!cached.promise) {
+    cached.promise = mongoose
+      .connect(process.env.MONGO_URI, {
+        serverSelectionTimeoutMS: 10000,
+      })
+      .then((mongooseInstance) => {
+        console.log("Connected to MongoDB");
+        return mongooseInstance;
+      })
+      .catch((err) => {
+        cached.promise = null;
+        console.error("MongoDB connection error:", err.message);
+        throw err;
+      });
+  }
+
+  cached.conn = await cached.promise;
+  return cached.conn;
+}
 
 // User schema
 const userSchema = new mongoose.Schema({
@@ -36,11 +62,14 @@ const userSchema = new mongoose.Schema({
   },
 });
 
-const User = mongoose.model("User", userSchema);
+const User =
+  mongoose.models.User || mongoose.model("User", userSchema);
 
 // POST /api/signup
 app.post("/api/signup", async (req, res) => {
   try {
+    await connectDB();
+
     const { username, password } = req.body || {};
 
     if (
@@ -54,8 +83,10 @@ app.post("/api/signup", async (req, res) => {
       });
     }
 
+    const cleanUsername = username.trim();
+
     const existingUser = await User.findOne({
-      username: username.trim(),
+      username: cleanUsername,
     });
 
     if (existingUser) {
@@ -66,12 +97,10 @@ app.post("/api/signup", async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newUser = new User({
-      username: username.trim(),
+    await User.create({
+      username: cleanUsername,
       password: hashedPassword,
     });
-
-    await newUser.save();
 
     return res.status(201).json({
       message: "User created successfully!",
@@ -94,6 +123,8 @@ app.post("/api/signup", async (req, res) => {
 // POST /api/login
 app.post("/api/login", async (req, res) => {
   try {
+    await connectDB();
+
     const { username, password } = req.body || {};
 
     if (
@@ -166,9 +197,7 @@ app.post("/api/analyze", async (req, res) => {
       });
     }
 
-    const ai = new GoogleGenAI({
-      apiKey: apiKey,
-    });
+    const ai = new GoogleGenAI({ apiKey });
 
     const prompt = `
 You are a business validation consultant.
@@ -196,48 +225,30 @@ For metrics:
 Scores are estimates, not guarantees.
 `;
 
-    // Retry only temporary server errors.
-    // Do not repeatedly retry exhausted quota errors.
-    const maxAttempts = 3;
     let response;
+    const maxAttempts = 3;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         response = await ai.models.generateContent({
-          model: model,
+          model,
           contents: prompt,
           config: {
             responseMimeType: "application/json",
             responseSchema: {
               type: Type.OBJECT,
               properties: {
-                demand: {
-                  type: Type.STRING,
-                },
-                scope: {
-                  type: Type.STRING,
-                },
-                budget: {
-                  type: Type.STRING,
-                },
-                competition: {
-                  type: Type.STRING,
-                },
+                demand: { type: Type.STRING },
+                scope: { type: Type.STRING },
+                budget: { type: Type.STRING },
+                competition: { type: Type.STRING },
                 metrics: {
                   type: Type.OBJECT,
                   properties: {
-                    demandScore: {
-                      type: Type.NUMBER,
-                    },
-                    probabilityOfSuccess: {
-                      type: Type.NUMBER,
-                    },
-                    competitionScore: {
-                      type: Type.NUMBER,
-                    },
-                    estimatedBudgetINR: {
-                      type: Type.NUMBER,
-                    },
+                    demandScore: { type: Type.NUMBER },
+                    probabilityOfSuccess: { type: Type.NUMBER },
+                    competitionScore: { type: Type.NUMBER },
+                    estimatedBudgetINR: { type: Type.NUMBER },
                   },
                   required: [
                     "demandScore",
@@ -263,11 +274,10 @@ Scores are estimates, not guarantees.
         const errorText = String(err.message || "");
         const status = Number(err.status || err.code || 0);
 
-        const quotaExceeded =
+        if (
           status === 429 ||
-          /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText);
-
-        if (quotaExceeded) {
+          /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText)
+        ) {
           console.error("Gemini quota exhausted.");
 
           return res.status(429).json({
@@ -309,7 +319,6 @@ Scores are estimates, not guarantees.
       throw new Error("Gemini returned invalid JSON.");
     }
 
-    // Validate the required analysis fields
     const requiredFields = [
       "demand",
       "scope",
@@ -351,10 +360,7 @@ Scores are estimates, not guarantees.
       "probabilityOfSuccess",
       "competitionScore",
     ]) {
-      if (
-        data.metrics[field] < 0 ||
-        data.metrics[field] > 100
-      ) {
+      if (data.metrics[field] < 0 || data.metrics[field] > 100) {
         throw new Error(`Invalid metric: ${field}`);
       }
     }
@@ -365,7 +371,7 @@ Scores are estimates, not guarantees.
 
     return res.status(200).json({
       success: true,
-      data: data,
+      data,
     });
   } catch (err) {
     const errorText = String(err.message || "");
@@ -373,7 +379,6 @@ Scores are estimates, not guarantees.
 
     console.error("Gemini analysis failed:", errorText);
 
-    // Handle quota errors that reach the outer catch
     if (
       status === 429 ||
       /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText)
@@ -398,23 +403,22 @@ Scores are estimates, not guarantees.
 
     return res.status(500).json({
       success: false,
-      message:
-        "Business analysis failed. Please try again later.",
+      message: "Business analysis failed. Please try again later.",
     });
   }
 });
 
-// Basic backend health check
+// Health check
 app.get("/", (req, res) => {
   res.status(200).send(
     "AI Business Validator Backend is running!"
   );
 });
 
-// Export the app for Vercel
+// Export for Vercel
 module.exports = app;
 
-// Start the server locally only
+// Start server locally
 if (require.main === module) {
   const PORT = process.env.PORT || 5000;
 
