@@ -29,7 +29,7 @@ const Dash = () => {
 
     try {
       const response = await fetch(
-        'https://ai-business-ip24.vercel.app/api/analyze',
+        'http://localhost:5000/api/analyze',
         {
           method: 'POST',
           headers: {
@@ -41,11 +41,32 @@ const Dash = () => {
         }
       );
 
-      const data = await response.json();
+      const responseText = await response.text();
+
+      let data;
+
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        console.error(
+          'Backend returned a non-JSON response:',
+          responseText
+        );
+
+        throw new Error(
+          `Server returned HTTP ${response.status}. ` +
+          'The response was not valid JSON. Check the backend.'
+        );
+      }
+
+      console.log('Analysis HTTP status:', response.status);
+      console.log('Analysis response:', data);
 
       if (!response.ok || !data.success) {
         throw new Error(
-          data.message || 'Business analysis failed.'
+          data.message ||
+          data.error ||
+          `Business analysis failed with HTTP ${response.status}.`
         );
       }
 
@@ -61,13 +82,13 @@ const Dash = () => {
         );
       }
 
-      // Preserve the existing analysis and support
-      // metrics when returned by the backend.
       setResult(data.data);
     } catch (err) {
       console.error('Analysis error:', err);
+
       setError(
-        err.message || 'Could not connect to the server.'
+        err.message ||
+        'Could not connect to the backend server.'
       );
     } finally {
       setLoading(false);
@@ -93,7 +114,6 @@ const Dash = () => {
     }
   ];
 
-  // NEW: Read numerical metrics from the backend.
   const metrics = result?.metrics;
 
   const scoreCharts = metrics
@@ -189,7 +209,7 @@ const Dash = () => {
             Business idea: {topic.trim()}
           </p>
 
-          {/* EXISTING: Original four analysis cards */}
+          {/* Original four analysis cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {cards.map((card) => (
               <div
@@ -207,7 +227,7 @@ const Dash = () => {
             ))}
           </div>
 
-          {/* NEW: Charts and financial visualizations */}
+          {/* Charts and financial visualizations */}
           {metrics && (
             <div className="mt-10 space-y-6">
               <h2 className="text-2xl font-bold">
@@ -227,7 +247,9 @@ const Dash = () => {
                       </h3>
 
                       <span className="text-purple-400 font-bold">
-                        {item.value}/100
+                        {Number.isFinite(item.value)
+                          ? `${item.value}/100`
+                          : 'N/A'}
                       </span>
                     </div>
 
@@ -235,7 +257,11 @@ const Dash = () => {
                       <div
                         className="h-full bg-purple-500 rounded-full transition-all duration-700"
                         style={{
-                          width: `${item.value}%`
+                          width: `${
+                            Number.isFinite(item.value)
+                              ? Math.max(0, Math.min(100, item.value))
+                              : 0
+                          }%`
                         }}
                       />
                     </div>
@@ -272,13 +298,16 @@ const Dash = () => {
                     </p>
 
                     <p className="text-purple-400 text-2xl font-bold">
-                      {formatINR(item.value)}
+                      {typeof item.value === 'number' &&
+                      Number.isFinite(item.value)
+                        ? formatINR(item.value)
+                        : 'N/A'}
                     </p>
                   </div>
                 ))}
               </div>
 
-              {/* Revenue vs expenses */}
+              {/* Revenue versus expenses */}
               <div className="p-6 bg-zinc-950 border border-zinc-800 rounded-2xl">
                 <h3 className="text-purple-400 text-xl font-bold mb-6">
                   Revenue vs Expenses
@@ -294,11 +323,22 @@ const Dash = () => {
                     value: metrics.monthlyExpenses
                   }
                 ].map((item) => {
-                  const maximum = Math.max(
-                    metrics.expectedMonthlyRevenue,
-                    metrics.monthlyExpenses,
-                    1
-                  );
+                  const revenue =
+                    typeof metrics.expectedMonthlyRevenue === 'number'
+                      ? metrics.expectedMonthlyRevenue
+                      : 0;
+
+                  const expenses =
+                    typeof metrics.monthlyExpenses === 'number'
+                      ? metrics.monthlyExpenses
+                      : 0;
+
+                  const maximum = Math.max(revenue, expenses, 1);
+
+                  const validValue =
+                    typeof item.value === 'number' &&
+                    Number.isFinite(item.value) &&
+                    item.value >= 0;
 
                   return (
                     <div key={item.label} className="mb-6">
@@ -308,7 +348,9 @@ const Dash = () => {
                         </span>
 
                         <span className="text-gray-300">
-                          {formatINR(item.value)}
+                          {validValue
+                            ? formatINR(item.value)
+                            : 'N/A'}
                         </span>
                       </div>
 
@@ -316,7 +358,11 @@ const Dash = () => {
                         <div
                           className="h-full bg-purple-500 rounded-full transition-all duration-700"
                           style={{
-                            width: `${(item.value / maximum) * 100}%`
+                            width: `${
+                              validValue
+                                ? (item.value / maximum) * 100
+                                : 0
+                            }%`
                           }}
                         />
                       </div>
@@ -326,10 +372,13 @@ const Dash = () => {
 
                 <p className="text-gray-500 text-sm">
                   Estimated monthly difference:{' '}
-                  {formatINR(
-                    metrics.expectedMonthlyRevenue -
-                    metrics.monthlyExpenses
-                  )}
+                  {typeof metrics.expectedMonthlyRevenue === 'number' &&
+                  typeof metrics.monthlyExpenses === 'number'
+                    ? formatINR(
+                        metrics.expectedMonthlyRevenue -
+                        metrics.monthlyExpenses
+                      )
+                    : 'N/A'}
                 </p>
               </div>
 

@@ -1,185 +1,150 @@
 
-const { GoogleGenAI, Type } = require("@google/genai");
-const dns = require("node:dns");
-const express = require("express");
-const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
-const cors = require("cors");
+const { GoogleGenAI } = require('@google/genai');
+const dns = require('node:dns');
+const express = require('express');
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const cors = require('cors');
 
-require("dotenv").config();
+require('dotenv').config();
 
-// Retain existing DNS configuration
-dns.setServers(["1.1.1.1", "8.8.8.8"]);
+dns.setServers(['1.1.1.1', '8.8.8.8']);
 
 const app = express();
 
 app.use(express.json());
 app.use(cors());
 
-// Reuse the MongoDB connection across Vercel invocations
-const cached = global.mongooseCache ||
-  (global.mongooseCache = { conn: null, promise: null });
+// -------------------- MongoDB --------------------
 
-async function connectDB() {
-  if (cached.conn && mongoose.connection.readyState === 1) {
-    return cached.conn;
-  }
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log('Connected to MongoDB'))
+  .catch((err) =>
+    console.error('MongoDB connection error:', err.message)
+  );
 
-  if (!process.env.MONGO_URI) {
-    throw new Error("MONGO_URI environment variable is missing.");
-  }
+// -------------------- User Schema --------------------
 
-  if (!cached.promise) {
-    cached.promise = mongoose
-      .connect(process.env.MONGO_URI, {
-        serverSelectionTimeoutMS: 10000,
-      })
-      .then((mongooseInstance) => {
-        console.log("Connected to MongoDB");
-        return mongooseInstance;
-      })
-      .catch((err) => {
-        cached.promise = null;
-        console.error("MongoDB connection error:", err.message);
-        throw err;
-      });
-  }
-
-  cached.conn = await cached.promise;
-  return cached.conn;
-}
-
-// User schema
 const userSchema = new mongoose.Schema({
-  username: {
-    type: String,
-    required: true,
-    unique: true,
-  },
-  password: {
-    type: String,
-    required: true,
-  },
+  username: { type: String, required: true, unique: true },
+  password: { type: String, required: true }
 });
 
-const User =
-  mongoose.models.User || mongoose.model("User", userSchema);
+const User = mongoose.model('User', userSchema);
 
-// POST /api/signup
-app.post("/api/signup", async (req, res) => {
+// -------------------- Signup Route --------------------
+
+app.post('/api/signup', async (req, res) => {
   try {
-    await connectDB();
-
-    const { username, password } = req.body || {};
+    const { username, password } = req.body;
 
     if (
-      typeof username !== "string" ||
-      typeof password !== "string" ||
+      typeof username !== 'string' ||
       !username.trim() ||
+      typeof password !== 'string' ||
       !password
     ) {
       return res.status(400).json({
-        message: "Username and password are required.",
+        message: 'Username and password are required.'
       });
     }
 
-    const cleanUsername = username.trim();
-
     const existingUser = await User.findOne({
-      username: cleanUsername,
+      username: username.trim()
     });
 
     if (existingUser) {
       return res.status(400).json({
-        message: "Username already taken",
+        message: 'Username already taken'
       });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
 
-    await User.create({
-      username: cleanUsername,
-      password: hashedPassword,
+    const newUser = new User({
+      username: username.trim(),
+      password: hashedPassword
     });
+
+    await newUser.save();
 
     return res.status(201).json({
-      message: "User created successfully!",
+      message: 'User created successfully!'
     });
   } catch (err) {
-    console.error("Signup error:", err.message);
+    console.error('Signup error:', err.message);
 
     if (err.code === 11000) {
       return res.status(400).json({
-        message: "Username already taken",
+        message: 'Username already taken'
       });
     }
 
     return res.status(500).json({
-      message: "Server error during signup.",
+      message: 'Server error'
     });
   }
 });
 
-// POST /api/login
-app.post("/api/login", async (req, res) => {
-  try {
-    await connectDB();
+// -------------------- Login Route --------------------
 
-    const { username, password } = req.body || {};
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
 
     if (
-      typeof username !== "string" ||
-      typeof password !== "string" ||
+      typeof username !== 'string' ||
+      typeof password !== 'string' ||
       !username.trim() ||
       !password
     ) {
       return res.status(400).json({
-        message: "Username and password are required.",
+        message: 'Username and password are required.'
       });
     }
 
     const user = await User.findOne({
-      username: username.trim(),
+      username: username.trim()
     });
 
     if (!user) {
       return res.status(400).json({
-        message: "Invalid username or password",
+        message: 'Invalid username or password'
       });
     }
 
-    const isMatch = await bcrypt.compare(
-      password,
-      user.password
-    );
+    const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
       return res.status(400).json({
-        message: "Invalid username or password",
+        message: 'Invalid username or password'
       });
     }
 
     return res.status(200).json({
-      message: "Login successful!",
+      message: 'Login successful!'
     });
   } catch (err) {
-    console.error("Login error:", err.message);
+    console.error('Login error:', err.message);
 
     return res.status(500).json({
-      message: "Server error during login.",
+      message: 'Server error'
     });
   }
 });
 
-// POST /api/analyze
-app.post("/api/analyze", async (req, res) => {
+// -------------------- AI Business Analysis --------------------
+
+app.post('/api/analyze', async (req, res) => {
   try {
     const { topic } = req.body || {};
 
-    if (typeof topic !== "string" || !topic.trim()) {
+    if (typeof topic !== 'string' || !topic.trim()) {
       return res.status(400).json({
         success: false,
-        message: "Please enter a business idea.",
+        message: 'Please enter a business idea.'
       });
     }
 
@@ -188,44 +153,98 @@ app.post("/api/analyze", async (req, res) => {
 
     if (!apiKey || !model) {
       console.error(
-        "GEMINI_API_KEY or GEMINI_MODEL is missing."
+        'Missing configuration:',
+        !apiKey ? 'GEMINI_API_KEY' : 'GEMINI_MODEL'
       );
 
       return res.status(500).json({
         success: false,
-        message: "AI service configuration is missing.",
+        message: 'Gemini API configuration is missing in backend .env.'
       });
     }
+
+    console.log('Starting business analysis...');
+    console.log('Gemini model:', model);
 
     const ai = new GoogleGenAI({ apiKey });
 
     const prompt = `
-You are a business validation consultant.
+You are an expert business validation consultant.
 
-Analyze the following business idea:
-"${topic.trim()}"
+Analyze this exact business idea:
+${topic.trim()}
 
-Use practical assumptions and Indian market context where relevant.
-Do not claim that estimates guarantee business success.
+Return only a valid JSON object with these fields:
 
-Return ONLY valid JSON with these fields:
+{
+  "demand": "Market demand and target customers",
+  "scope": "Growth opportunities and business risks",
+  "budget": "Estimated startup costs and cost breakdown in INR",
+  "competition": "Relevant competitors and differentiation strategy",
+  "metrics": {
+    "demandScore": 0,
+    "scopeScore": 0,
+    "competitionScore": 0,
+    "riskScore": 0,
+    "startupBudget": 0,
+    "monthlyExpenses": 0,
+    "expectedMonthlyRevenue": 0
+  }
+}
 
-1. demand: A concise explanation of market demand.
-2. scope: A concise explanation of business potential and growth.
-3. budget: A concise estimated startup budget in INR.
-4. competition: A concise explanation of competitors and differentiation.
-5. metrics: Numeric scores for the dashboard.
-
-For metrics:
-- demandScore: number from 0 to 100
-- probabilityOfSuccess: number from 0 to 100
-- competitionScore: number from 0 to 100
-- estimatedBudgetINR: estimated budget as a number in INR
-
-Scores are estimates, not guarantees.
+Rules:
+- Make the analysis specific to the submitted business idea.
+- All four text fields must be non-empty strings.
+- All scores must be integers between 0 and 100.
+- Higher competitionScore means more intense competition.
+- Higher riskScore means greater business risk.
+- Financial figures must be non-negative numbers in INR.
+- Financial figures are estimates, not verified statistics.
+- Do not guarantee business success.
+- Return JSON only, without Markdown fences.
 `;
 
+    const responseSchema = {
+      type: 'OBJECT',
+      properties: {
+        demand: { type: 'STRING' },
+        scope: { type: 'STRING' },
+        budget: { type: 'STRING' },
+        competition: { type: 'STRING' },
+        metrics: {
+          type: 'OBJECT',
+          properties: {
+            demandScore: { type: 'INTEGER' },
+            scopeScore: { type: 'INTEGER' },
+            competitionScore: { type: 'INTEGER' },
+            riskScore: { type: 'INTEGER' },
+            startupBudget: { type: 'NUMBER' },
+            monthlyExpenses: { type: 'NUMBER' },
+            expectedMonthlyRevenue: { type: 'NUMBER' }
+          },
+          required: [
+            'demandScore',
+            'scopeScore',
+            'competitionScore',
+            'riskScore',
+            'startupBudget',
+            'monthlyExpenses',
+            'expectedMonthlyRevenue'
+          ]
+        }
+      },
+      required: [
+        'demand',
+        'scope',
+        'budget',
+        'competition',
+        'metrics'
+      ]
+    };
+
     let response;
+
+    // Retry temporary server failures, not quota/authentication errors.
     const maxAttempts = 3;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -234,195 +253,190 @@ Scores are estimates, not guarantees.
           model,
           contents: prompt,
           config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                demand: { type: Type.STRING },
-                scope: { type: Type.STRING },
-                budget: { type: Type.STRING },
-                competition: { type: Type.STRING },
-                metrics: {
-                  type: Type.OBJECT,
-                  properties: {
-                    demandScore: { type: Type.NUMBER },
-                    probabilityOfSuccess: { type: Type.NUMBER },
-                    competitionScore: { type: Type.NUMBER },
-                    estimatedBudgetINR: { type: Type.NUMBER },
-                  },
-                  required: [
-                    "demandScore",
-                    "probabilityOfSuccess",
-                    "competitionScore",
-                    "estimatedBudgetINR",
-                  ],
-                },
-              },
-              required: [
-                "demand",
-                "scope",
-                "budget",
-                "competition",
-                "metrics",
-              ],
-            },
-          },
+            temperature: 0.4,
+            responseMimeType: 'application/json',
+            responseSchema
+          }
         });
 
         break;
       } catch (err) {
-        const errorText = String(err.message || "");
-        const status = Number(err.status || err.code || 0);
+        const status = Number(err.status || err.statusCode || 0);
 
-        if (
-          status === 429 ||
-          /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText)
-        ) {
-          console.error("Gemini quota exhausted.");
+        console.error('Gemini request error:', {
+          attempt,
+          status: status || 'unknown',
+          message: err.message
+        });
 
-          return res.status(429).json({
-            success: false,
-            message:
-              "Gemini API quota exhausted. Please try again after your quota resets.",
-          });
-        }
+        const retryable = [500, 502, 503, 504].includes(status);
 
-        const temporaryError =
-          [500, 502, 503, 504].includes(status) ||
-          /UNAVAILABLE|INTERNAL|overloaded/i.test(errorText);
-
-        if (!temporaryError || attempt === maxAttempts) {
+        if (!retryable || attempt === maxAttempts) {
           throw err;
         }
 
-        const delay = 1000 * Math.pow(2, attempt - 1);
+        const delay = 1000 * attempt;
 
-        console.log(
-          `Gemini temporary error. Retry ${attempt + 1}/${maxAttempts} in ${delay}ms.`
-        );
+        console.log(`Retrying Gemini request in ${delay}ms...`);
 
-        await new Promise((resolve) =>
-          setTimeout(resolve, delay)
-        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
 
-    if (!response || !response.text) {
-      throw new Error("Gemini returned an empty response.");
+    const output = response?.text;
+
+    if (!output) {
+      throw new Error('Gemini returned an empty response.');
     }
 
-    let data;
+    let result;
 
     try {
-      data = JSON.parse(response.text);
-    } catch {
-      throw new Error("Gemini returned invalid JSON.");
-    }
+      result = JSON.parse(output);
+    } catch (err) {
+      console.error('Gemini JSON parsing error:', err.message);
 
-    const requiredFields = [
-      "demand",
-      "scope",
-      "budget",
-      "competition",
-    ];
-
-    for (const field of requiredFields) {
-      if (
-        typeof data[field] !== "string" ||
-        !data[field].trim()
-      ) {
-        throw new Error(
-          `Gemini returned incomplete analysis: ${field}`
-        );
-      }
-    }
-
-    const metricFields = [
-      "demandScore",
-      "probabilityOfSuccess",
-      "competitionScore",
-      "estimatedBudgetINR",
-    ];
-
-    if (
-      !data.metrics ||
-      !metricFields.every(
-        (field) =>
-          typeof data.metrics[field] === "number" &&
-          Number.isFinite(data.metrics[field])
-      )
-    ) {
-      throw new Error("Gemini returned invalid analysis metrics.");
-    }
-
-    for (const field of [
-      "demandScore",
-      "probabilityOfSuccess",
-      "competitionScore",
-    ]) {
-      if (data.metrics[field] < 0 || data.metrics[field] > 100) {
-        throw new Error(`Invalid metric: ${field}`);
-      }
-    }
-
-    if (data.metrics.estimatedBudgetINR < 0) {
-      throw new Error("Invalid estimated budget.");
-    }
-
-    return res.status(200).json({
-      success: true,
-      data,
-    });
-  } catch (err) {
-    const errorText = String(err.message || "");
-    const status = Number(err.status || err.code || 0);
-
-    console.error("Gemini analysis failed:", errorText);
-
-    if (
-      status === 429 ||
-      /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText)
-    ) {
-      return res.status(429).json({
+      return res.status(502).json({
         success: false,
-        message:
-          "Gemini API quota exhausted. Please try again after your quota resets.",
+        message: 'Gemini returned an invalid JSON response.'
       });
     }
 
-    if (
-      status === 503 ||
-      /UNAVAILABLE|overloaded/i.test(errorText)
-    ) {
+    const textFields = [
+      'demand',
+      'scope',
+      'budget',
+      'competition'
+    ];
+
+    const validText = textFields.every(
+      (field) =>
+        typeof result[field] === 'string' &&
+        result[field].trim().length > 0
+    );
+
+    const metrics = result.metrics;
+
+    const scoreFields = [
+      'demandScore',
+      'scopeScore',
+      'competitionScore',
+      'riskScore'
+    ];
+
+    const moneyFields = [
+      'startupBudget',
+      'monthlyExpenses',
+      'expectedMonthlyRevenue'
+    ];
+
+    const validScores =
+      metrics &&
+      scoreFields.every(
+        (field) =>
+          Number.isInteger(metrics[field]) &&
+          metrics[field] >= 0 &&
+          metrics[field] <= 100
+      );
+
+    const validMoney =
+      metrics &&
+      moneyFields.every(
+        (field) =>
+          typeof metrics[field] === 'number' &&
+          Number.isFinite(metrics[field]) &&
+          metrics[field] >= 0
+      );
+
+    if (!validText || !validScores || !validMoney) {
+      console.error('Gemini returned incomplete or invalid fields.');
+
+      return res.status(502).json({
+        success: false,
+        message: 'Gemini returned incomplete or invalid analysis data.'
+      });
+    }
+
+    console.log('Business analysis completed successfully.');
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        demand: result.demand,
+        scope: result.scope,
+        budget: result.budget,
+        competition: result.competition,
+        metrics: {
+          demandScore: metrics.demandScore,
+          scopeScore: metrics.scopeScore,
+          competitionScore: metrics.competitionScore,
+          riskScore: metrics.riskScore,
+          startupBudget: metrics.startupBudget,
+          monthlyExpenses: metrics.monthlyExpenses,
+          expectedMonthlyRevenue: metrics.expectedMonthlyRevenue
+        }
+      }
+    });
+  } catch (err) {
+    const status = Number(err.status || err.statusCode || 0);
+
+    console.error('========== GEMINI ERROR ==========');
+    console.error('Message:', err.message);
+    console.error('Status:', status || 'unknown');
+    console.error('==================================');
+
+    if (status === 429) {
+      return res.status(429).json({
+        success: false,
+        message: 'Gemini quota or rate limit exceeded. Check your API quota.'
+      });
+    }
+
+    if (status === 400) {
+      return res.status(502).json({
+        success: false,
+        message: 'Gemini rejected the request. Check the model and request configuration.'
+      });
+    }
+
+    if (status === 401 || status === 403) {
+      return res.status(502).json({
+        success: false,
+        message: 'Gemini API authentication or permission failed.'
+      });
+    }
+
+    if (status === 404) {
+      return res.status(502).json({
+        success: false,
+        message: 'Gemini model not found. Check GEMINI_MODEL.'
+      });
+    }
+
+    if ([503, 504].includes(status)) {
       return res.status(503).json({
         success: false,
-        message:
-          "Gemini is temporarily unavailable. Please try again later.",
+        message: 'Gemini is temporarily unavailable. Try again later.'
       });
     }
 
     return res.status(500).json({
       success: false,
-      message: "Business analysis failed. Please try again later.",
+      message: 'Gemini analysis failed. Check the backend terminal.'
     });
   }
 });
 
-// Health check
-app.get("/", (req, res) => {
-  res.status(200).send(
-    "AI Business Validator Backend is running!"
-  );
+// -------------------- Health Check --------------------
+
+app.get('/', (req, res) => {
+  res.status(200).send('AI Business Validator backend is running.');
 });
 
-// Export for Vercel
-module.exports = app;
+// -------------------- Start Server --------------------
 
-// Start server locally
-if (require.main === module) {
-  const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000;
 
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
