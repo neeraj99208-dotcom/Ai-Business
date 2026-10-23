@@ -1,5 +1,4 @@
 
-const { GoogleGenAI, Type } = require("@google/genai");
 const dns = require("node:dns");
 const express = require("express");
 const mongoose = require("mongoose");
@@ -183,12 +182,12 @@ app.post("/api/analyze", async (req, res) => {
       });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    const model = process.env.GEMINI_MODEL;
+    const apiKey = process.env.XAI_API_KEY;
+    const model = process.env.XAI_MODEL;
 
     if (!apiKey || !model) {
       console.error(
-        "GEMINI_API_KEY or GEMINI_MODEL is missing."
+        "XAI_API_KEY or XAI_MODEL is missing."
       );
 
       return res.status(500).json({
@@ -196,8 +195,6 @@ app.post("/api/analyze", async (req, res) => {
         message: "AI service configuration is missing.",
       });
     }
-
-    const ai = new GoogleGenAI({ apiKey });
 
     const prompt = `
 You are a business validation consultant.
@@ -230,44 +227,59 @@ Scores are estimates, not guarantees.
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        response = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                demand: { type: Type.STRING },
-                scope: { type: Type.STRING },
-                budget: { type: Type.STRING },
-                competition: { type: Type.STRING },
-                metrics: {
-                  type: Type.OBJECT,
-                  properties: {
-                    demandScore: { type: Type.NUMBER },
-                    probabilityOfSuccess: { type: Type.NUMBER },
-                    competitionScore: { type: Type.NUMBER },
-                    estimatedBudgetINR: { type: Type.NUMBER },
-                  },
-                  required: [
-                    "demandScore",
-                    "probabilityOfSuccess",
-                    "competitionScore",
-                    "estimatedBudgetINR",
-                  ],
-                },
-              },
-              required: [
-                "demand",
-                "scope",
-                "budget",
-                "competition",
-                "metrics",
-              ],
+        const grokResponse = await fetch(
+          "https://api.x.ai/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
             },
-          },
-        });
+            body: JSON.stringify({
+              model,
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    'You are a business validation consultant. Return ONLY valid JSON with the fields "demand", "scope", "budget", "competition", and "metrics". The metrics object must contain numeric demandScore, probabilityOfSuccess, competitionScore, and estimatedBudgetINR. Scores must be between 0 and 100, except estimatedBudgetINR, which must be nonnegative. Do not use Markdown code fences.',
+                },
+                {
+                  role: "user",
+                  content: prompt,
+                },
+              ],
+              temperature: 0.3,
+              max_tokens: 1200,
+            }),
+          }
+        );
+
+        if (!grokResponse.ok) {
+          const details = await grokResponse.text();
+          const error = new Error(details);
+          error.status = grokResponse.status;
+
+          console.error(
+            "Grok API error:",
+            grokResponse.status,
+            details
+          );
+
+          throw error;
+        }
+
+        const grokData = await grokResponse.json();
+        const grokText =
+          grokData.choices?.[0]?.message?.content;
+
+        if (
+          typeof grokText !== "string" ||
+          !grokText.trim()
+        ) {
+          throw new Error("Grok returned an empty response.");
+        }
+
+        response = { text: grokText.trim() };
 
         break;
       } catch (err) {
@@ -278,18 +290,20 @@ Scores are estimates, not guarantees.
           status === 429 ||
           /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText)
         ) {
-          console.error("Gemini quota exhausted.");
+          console.error("Grok quota or rate limit reached.");
 
           return res.status(429).json({
             success: false,
             message:
-              "Gemini API quota exhausted. Please try again after your quota resets.",
+              "Grok API quota or rate limit reached. Please check your xAI API usage and billing.",
           });
         }
 
         const temporaryError =
           [500, 502, 503, 504].includes(status) ||
-          /UNAVAILABLE|INTERNAL|overloaded/i.test(errorText);
+          /UNAVAILABLE|INTERNAL|overloaded|temporarily unavailable/i.test(
+            errorText
+          );
 
         if (!temporaryError || attempt === maxAttempts) {
           throw err;
@@ -298,7 +312,7 @@ Scores are estimates, not guarantees.
         const delay = 1000 * Math.pow(2, attempt - 1);
 
         console.log(
-          `Gemini temporary error. Retry ${attempt + 1}/${maxAttempts} in ${delay}ms.`
+          `Grok temporary error. Retry ${attempt + 1}/${maxAttempts} in ${delay}ms.`
         );
 
         await new Promise((resolve) =>
@@ -308,15 +322,21 @@ Scores are estimates, not guarantees.
     }
 
     if (!response || !response.text) {
-      throw new Error("Gemini returned an empty response.");
+      throw new Error("Grok returned an empty response.");
     }
 
     let data;
 
     try {
-      data = JSON.parse(response.text);
+      const cleanedText = response.text
+        .replace(/^```json\s*/i, "")
+        .replace(/^```\s*/i, "")
+        .replace(/\s*```$/, "")
+        .trim();
+
+      data = JSON.parse(cleanedText);
     } catch {
-      throw new Error("Gemini returned invalid JSON.");
+      throw new Error("Grok returned invalid JSON.");
     }
 
     const requiredFields = [
@@ -332,7 +352,7 @@ Scores are estimates, not guarantees.
         !data[field].trim()
       ) {
         throw new Error(
-          `Gemini returned incomplete analysis: ${field}`
+          `Grok returned incomplete analysis: ${field}`
         );
       }
     }
@@ -352,7 +372,7 @@ Scores are estimates, not guarantees.
           Number.isFinite(data.metrics[field])
       )
     ) {
-      throw new Error("Gemini returned invalid analysis metrics.");
+      throw new Error("Grok returned invalid analysis metrics.");
     }
 
     for (const field of [
@@ -377,7 +397,7 @@ Scores are estimates, not guarantees.
     const errorText = String(err.message || "");
     const status = Number(err.status || err.code || 0);
 
-    console.error("Gemini analysis failed:", errorText);
+    console.error("Grok analysis failed:", errorText);
 
     if (
       status === 429 ||
@@ -386,7 +406,7 @@ Scores are estimates, not guarantees.
       return res.status(429).json({
         success: false,
         message:
-          "Gemini API quota exhausted. Please try again after your quota resets.",
+          "Grok API quota or rate limit reached. Please check your xAI API usage and billing.",
       });
     }
 
@@ -397,7 +417,7 @@ Scores are estimates, not guarantees.
       return res.status(503).json({
         success: false,
         message:
-          "Gemini is temporarily unavailable. Please try again later.",
+          "Grok is temporarily unavailable. Please try again later.",
       });
     }
 
