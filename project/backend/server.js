@@ -6,7 +6,6 @@ const cors = require("cors");
 
 require("dotenv").config();
 
-// Retain existing DNS configuration
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
 
 const app = express();
@@ -14,8 +13,9 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Reuse the MongoDB connection across Vercel invocations
-const cached = global.mongooseCache ||
+// MongoDB connection cache
+const cached =
+  global.mongooseCache ||
   (global.mongooseCache = { conn: null, promise: null });
 
 async function connectDB() {
@@ -32,9 +32,9 @@ async function connectDB() {
       .connect(process.env.MONGO_URI, {
         serverSelectionTimeoutMS: 10000,
       })
-      .then((mongooseInstance) => {
+      .then((connection) => {
         console.log("Connected to MongoDB");
-        return mongooseInstance;
+        return connection;
       })
       .catch((err) => {
         cached.promise = null;
@@ -146,10 +146,7 @@ app.post("/api/login", async (req, res) => {
       });
     }
 
-    const isMatch = await bcrypt.compare(
-      password,
-      user.password
-    );
+    const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
       return res.status(400).json({
@@ -169,7 +166,7 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// POST /api/analyze
+// POST /api/analyze — Grok Responses API
 app.post("/api/analyze", async (req, res) => {
   try {
     const { topic } = req.body || {};
@@ -181,11 +178,10 @@ app.post("/api/analyze", async (req, res) => {
       });
     }
 
-    // Read Grok API configuration from environment variables
     const apiKey = process.env.XAI_API_KEY;
-    const model = process.env.XAI_MODEL;
+    const model = process.env.XAI_MODEL || "grok-4.7";
 
-    // Safe diagnostic: never log the actual API key
+    // Check environment configuration safely
     if (!apiKey || !model) {
       console.error("Grok configuration check:", {
         hasApiKey: Boolean(apiKey),
@@ -199,38 +195,47 @@ app.post("/api/analyze", async (req, res) => {
     }
 
     const prompt = `
-You are a business validation consultant.
+You are a business validation consultant for the Indian market.
 
-Analyze the following business idea:
-"${topic.trim()}"
+Analyze this business idea:
+${topic.trim()}
 
-Use practical assumptions and Indian market context where relevant.
-Do not claim that estimates guarantee business success.
+Use practical assumptions and Indian market context.
+Do not guarantee business success.
 
-Return ONLY valid JSON with these fields:
+Return a valid JSON object only, with these exact fields:
 
-1. demand: A concise explanation of market demand.
-2. scope: A concise explanation of business potential and growth.
-3. budget: A concise estimated startup budget in INR.
-4. competition: A concise explanation of competitors and differentiation.
-5. metrics: Numeric scores for the dashboard.
+{
+  "demand": "Concise market demand explanation",
+  "scope": "Business potential and growth",
+  "budget": "Estimated startup budget in INR",
+  "competition": "Competitors and differentiation",
+  "metrics": {
+    "demandScore": 50,
+    "probabilityOfSuccess": 50,
+    "competitionScore": 50,
+    "estimatedBudgetINR": 100000
+  }
+}
 
-For metrics:
+Requirements:
 - demandScore: number from 0 to 100
 - probabilityOfSuccess: number from 0 to 100
 - competitionScore: number from 0 to 100
-- estimatedBudgetINR: estimated budget as a number in INR
-
-Scores are estimates, not guarantees.
+- estimatedBudgetINR: nonnegative number in INR
+- Use realistic estimates, not guaranteed predictions.
+- Do not include Markdown code fences.
 `;
 
-    let response;
+    let grokData;
     const maxAttempts = 3;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let grokResponse;
+
       try {
-        const grokResponse = await fetch(
-          "https://api.x.ai/v1/chat/completions",
+        grokResponse = await fetch(
+          "https://api.x.ai/v1/responses",
           {
             method: "POST",
             headers: {
@@ -239,120 +244,139 @@ Scores are estimates, not guarantees.
             },
             body: JSON.stringify({
               model,
-              messages: [
-                {
-                  role: "system",
-                  content:
-                    'You are a business validation consultant. Return ONLY valid JSON with the fields "demand", "scope", "budget", "competition", and "metrics". The metrics object must contain numeric demandScore, probabilityOfSuccess, competitionScore, and estimatedBudgetINR. The first three metrics must be between 0 and 100. estimatedBudgetINR must be nonnegative. Do not use Markdown code fences.',
-                },
+              input: [
                 {
                   role: "user",
                   content: prompt,
                 },
               ],
-              temperature: 0.3,
-              max_tokens: 1200,
             }),
           }
         );
-
-        if (!grokResponse.ok) {
-          const details = await grokResponse.text();
-          const error = new Error(details);
-          error.status = grokResponse.status;
-
-          console.error("Grok API error:", {
-            status: grokResponse.status,
-            details: details.slice(0, 1500),
-          });
-
-          throw error;
-        }
-
-        const grokData = await grokResponse.json();
-        const grokText =
-          grokData.choices?.[0]?.message?.content;
-
-        if (
-          typeof grokText !== "string" ||
-          !grokText.trim()
-        ) {
-          throw new Error("Grok returned an empty response.");
-        }
-
-        response = { text: grokText.trim() };
-        break;
       } catch (err) {
-        const errorText = String(err.message || "");
-        const status = Number(err.status || err.code || 0);
+        // Network or connection failure
+        if (attempt === maxAttempts) {
+          console.error("Grok connection failed:", err.message);
 
-        if (status === 401 || status === 403) {
-          return res.status(status).json({
+          return res.status(502).json({
             success: false,
-            message:
-              "Grok authentication failed. Check your XAI_API_KEY and xAI API access.",
+            message: "Could not connect to the Grok API.",
           });
         }
-
-        if (status === 400) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Grok rejected the request. Check XAI_MODEL and the API request settings.",
-          });
-        }
-
-        if (
-          status === 429 ||
-          /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText)
-        ) {
-          return res.status(429).json({
-            success: false,
-            message:
-              "Grok API quota or rate limit reached. Check your xAI API usage and billing.",
-          });
-        }
-
-        const temporaryError =
-          [500, 502, 503, 504].includes(status) ||
-          /UNAVAILABLE|INTERNAL|overloaded|temporarily unavailable/i.test(
-            errorText
-          );
-
-        if (!temporaryError || attempt === maxAttempts) {
-          throw err;
-        }
-
-        const delay = 1000 * Math.pow(2, attempt - 1);
-
-        console.log(
-          `Grok temporary error. Retry ${attempt + 1}/${maxAttempts} in ${delay}ms.`
-        );
 
         await new Promise((resolve) =>
-          setTimeout(resolve, delay)
+          setTimeout(resolve, 1000 * attempt)
         );
+
+        continue;
       }
+
+      if (grokResponse.ok) {
+        grokData = await grokResponse.json();
+        break;
+      }
+
+      const details = await grokResponse.text();
+      const status = grokResponse.status;
+
+      // Log the actual upstream error, never the API key
+      console.error("Grok API error:", {
+        status,
+        details: details.slice(0, 1200),
+      });
+
+      if (status === 401 || status === 403) {
+        return res.status(status).json({
+          success: false,
+          message:
+            "Grok authentication failed. Check your XAI_API_KEY and API access.",
+        });
+      }
+
+      if (status === 429) {
+        return res.status(429).json({
+          success: false,
+          message:
+            "Grok rate limit or usage limit reached. Check your xAI API account.",
+        });
+      }
+
+      if (status === 400) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Grok rejected the request. Check the Grok API error in Vercel Logs.",
+        });
+      }
+
+      if (![500, 502, 503, 504].includes(status)) {
+        return res.status(502).json({
+          success: false,
+          message: "The Grok API returned an unexpected error.",
+        });
+      }
+
+      if (attempt === maxAttempts) {
+        return res.status(503).json({
+          success: false,
+          message: "Grok is temporarily unavailable. Please try again.",
+        });
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, 1000 * Math.pow(2, attempt - 1))
+      );
     }
 
-    if (!response || !response.text) {
-      throw new Error("Grok returned an empty response.");
+    if (!grokData) {
+      return res.status(502).json({
+        success: false,
+        message: "Grok did not return a response.",
+      });
     }
 
+    // Extract text from the Responses API output
+    const outputText = (grokData.output || [])
+      .filter((item) => item.type === "message")
+      .flatMap((item) => item.content || [])
+      .filter((item) => item.type === "output_text")
+      .map((item) => item.text || "")
+      .join("\n")
+      .trim();
+
+    if (!outputText) {
+      console.error(
+        "Grok returned no output text:",
+        JSON.stringify(grokData).slice(0, 1200)
+      );
+
+      return res.status(502).json({
+        success: false,
+        message: "Grok returned an empty analysis.",
+      });
+    }
+
+    // Parse JSON returned by Grok
     let data;
 
     try {
-      const cleanedText = response.text
+      const cleanedText = outputText
         .replace(/^```json\s*/i, "")
         .replace(/^```\s*/i, "")
         .replace(/\s*```$/, "")
         .trim();
 
       data = JSON.parse(cleanedText);
-    } catch {
-      throw new Error("Grok returned invalid JSON.");
+    } catch (err) {
+      console.error("Grok returned invalid JSON:", outputText.slice(0, 500));
+
+      return res.status(502).json({
+        success: false,
+        message: "Grok returned an invalid analysis format. Please retry.",
+      });
     }
 
+    // Validate required text fields
     const requiredFields = [
       "demand",
       "scope",
@@ -365,12 +389,14 @@ Scores are estimates, not guarantees.
         typeof data[field] !== "string" ||
         !data[field].trim()
       ) {
-        throw new Error(
-          `Grok returned incomplete analysis: ${field}`
-        );
+        return res.status(502).json({
+          success: false,
+          message: `Grok returned incomplete analysis: ${field}. Please retry.`,
+        });
       }
     }
 
+    // Validate numeric metrics
     const metricFields = [
       "demandScore",
       "probabilityOfSuccess",
@@ -386,7 +412,10 @@ Scores are estimates, not guarantees.
           Number.isFinite(data.metrics[field])
       )
     ) {
-      throw new Error("Grok returned invalid analysis metrics.");
+      return res.status(502).json({
+        success: false,
+        message: "Grok returned invalid dashboard metrics. Please retry.",
+      });
     }
 
     for (const field of [
@@ -395,12 +424,18 @@ Scores are estimates, not guarantees.
       "competitionScore",
     ]) {
       if (data.metrics[field] < 0 || data.metrics[field] > 100) {
-        throw new Error(`Invalid metric: ${field}`);
+        return res.status(502).json({
+          success: false,
+          message: `Grok returned an invalid ${field}. Please retry.`,
+        });
       }
     }
 
     if (data.metrics.estimatedBudgetINR < 0) {
-      throw new Error("Invalid estimated budget.");
+      return res.status(502).json({
+        success: false,
+        message: "Grok returned an invalid estimated budget.",
+      });
     }
 
     return res.status(200).json({
@@ -408,45 +443,11 @@ Scores are estimates, not guarantees.
       data,
     });
   } catch (err) {
-    const errorText = String(err.message || "");
-    const status = Number(err.status || err.code || 0);
-
-    console.error("Grok analysis failed:", {
-      status: status || "unknown",
-      message: errorText.slice(0, 1500),
-    });
-
-    if (status === 401 || status === 403) {
-      return res.status(status).json({
-        success: false,
-        message: "Grok authentication failed. Check your API configuration.",
-      });
-    }
-
-    if (
-      status === 429 ||
-      /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText)
-    ) {
-      return res.status(429).json({
-        success: false,
-        message:
-          "Grok API quota or rate limit reached. Check your xAI API usage and billing.",
-      });
-    }
-
-    if (
-      status === 503 ||
-      /UNAVAILABLE|overloaded/i.test(errorText)
-    ) {
-      return res.status(503).json({
-        success: false,
-        message: "Grok is temporarily unavailable. Please try again later.",
-      });
-    }
+    console.error("Analysis route error:", err.message);
 
     return res.status(500).json({
       success: false,
-      message: "Business analysis failed. Check backend logs for details.",
+      message: "Business analysis failed. Please try again later.",
     });
   }
 });
@@ -461,7 +462,7 @@ app.get("/", (req, res) => {
 // Export for Vercel
 module.exports = app;
 
-// Start server locally
+// Local development only
 if (require.main === module) {
   const PORT = process.env.PORT || 5000;
 
