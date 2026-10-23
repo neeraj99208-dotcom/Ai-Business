@@ -1,4 +1,3 @@
-
 const dns = require("node:dns");
 const express = require("express");
 const mongoose = require("mongoose");
@@ -182,13 +181,16 @@ app.post("/api/analyze", async (req, res) => {
       });
     }
 
+    // Read Grok API configuration from environment variables
     const apiKey = process.env.XAI_API_KEY;
     const model = process.env.XAI_MODEL;
 
+    // Safe diagnostic: never log the actual API key
     if (!apiKey || !model) {
-      console.error(
-        "XAI_API_KEY or XAI_MODEL is missing."
-      );
+      console.error("Grok configuration check:", {
+        hasApiKey: Boolean(apiKey),
+        hasModel: Boolean(model),
+      });
 
       return res.status(500).json({
         success: false,
@@ -241,7 +243,7 @@ Scores are estimates, not guarantees.
                 {
                   role: "system",
                   content:
-                    'You are a business validation consultant. Return ONLY valid JSON with the fields "demand", "scope", "budget", "competition", and "metrics". The metrics object must contain numeric demandScore, probabilityOfSuccess, competitionScore, and estimatedBudgetINR. Scores must be between 0 and 100, except estimatedBudgetINR, which must be nonnegative. Do not use Markdown code fences.',
+                    'You are a business validation consultant. Return ONLY valid JSON with the fields "demand", "scope", "budget", "competition", and "metrics". The metrics object must contain numeric demandScore, probabilityOfSuccess, competitionScore, and estimatedBudgetINR. The first three metrics must be between 0 and 100. estimatedBudgetINR must be nonnegative. Do not use Markdown code fences.',
                 },
                 {
                   role: "user",
@@ -259,11 +261,10 @@ Scores are estimates, not guarantees.
           const error = new Error(details);
           error.status = grokResponse.status;
 
-          console.error(
-            "Grok API error:",
-            grokResponse.status,
-            details
-          );
+          console.error("Grok API error:", {
+            status: grokResponse.status,
+            details: details.slice(0, 1500),
+          });
 
           throw error;
         }
@@ -280,22 +281,35 @@ Scores are estimates, not guarantees.
         }
 
         response = { text: grokText.trim() };
-
         break;
       } catch (err) {
         const errorText = String(err.message || "");
         const status = Number(err.status || err.code || 0);
 
+        if (status === 401 || status === 403) {
+          return res.status(status).json({
+            success: false,
+            message:
+              "Grok authentication failed. Check your XAI_API_KEY and xAI API access.",
+          });
+        }
+
+        if (status === 400) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Grok rejected the request. Check XAI_MODEL and the API request settings.",
+          });
+        }
+
         if (
           status === 429 ||
           /RESOURCE_EXHAUSTED|quota exceeded/i.test(errorText)
         ) {
-          console.error("Grok quota or rate limit reached.");
-
           return res.status(429).json({
             success: false,
             message:
-              "Grok API quota or rate limit reached. Please check your xAI API usage and billing.",
+              "Grok API quota or rate limit reached. Check your xAI API usage and billing.",
           });
         }
 
@@ -397,7 +411,17 @@ Scores are estimates, not guarantees.
     const errorText = String(err.message || "");
     const status = Number(err.status || err.code || 0);
 
-    console.error("Grok analysis failed:", errorText);
+    console.error("Grok analysis failed:", {
+      status: status || "unknown",
+      message: errorText.slice(0, 1500),
+    });
+
+    if (status === 401 || status === 403) {
+      return res.status(status).json({
+        success: false,
+        message: "Grok authentication failed. Check your API configuration.",
+      });
+    }
 
     if (
       status === 429 ||
@@ -406,7 +430,7 @@ Scores are estimates, not guarantees.
       return res.status(429).json({
         success: false,
         message:
-          "Grok API quota or rate limit reached. Please check your xAI API usage and billing.",
+          "Grok API quota or rate limit reached. Check your xAI API usage and billing.",
       });
     }
 
@@ -416,14 +440,13 @@ Scores are estimates, not guarantees.
     ) {
       return res.status(503).json({
         success: false,
-        message:
-          "Grok is temporarily unavailable. Please try again later.",
+        message: "Grok is temporarily unavailable. Please try again later.",
       });
     }
 
     return res.status(500).json({
       success: false,
-      message: "Business analysis failed. Please try again later.",
+      message: "Business analysis failed. Check backend logs for details.",
     });
   }
 });
