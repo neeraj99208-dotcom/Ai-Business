@@ -1,12 +1,11 @@
-
 const { GoogleGenAI } = require('@google/genai');
 const dns = require('node:dns');
 const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const cors = require('cors');
-
-require('dotenv').config();
+const path = require('node:path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 dns.setServers(['1.1.1.1', '8.8.8.8']);
 
